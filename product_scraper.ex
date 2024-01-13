@@ -1,43 +1,52 @@
-// puppeteer_script.js
-const puppeteer = require('puppeteer');
+defmodule ProductScraper do
+  require Jason
+  require Logger
 
-async function scrapeProductDetails(searchQuery, maxResults) {
-    const browser = await puppeteer.launch({
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
-        headless: true
-    });
+  @default_max_retries 3
+  @retry_delay_ms 2000
 
-    const page = await browser.newPage();
-    try {
-        await page.goto('https://www.amazon.com/', { waitUntil: 'networkidle2', timeout: 30000 });
-        await page.type('#twotabsearchtextbox', searchQuery);
-        await page.click('input.nav-input[type="submit"]');
-        await page.waitForSelector('.s-main-slot', { timeout: 30000 });
+  def scrape_products(search_query, max_results \\ 10) do
+    Logger.info("Initiating scraping for '#{search_query}' with max results: #{max_results}")
 
-        const products = await page.evaluate(maxResults => {
-            const items = [];
-            document.querySelectorAll('.s-result-item').forEach((item, index) => {
-                if (index >= maxResults) return;
-                const name = item.querySelector('h2 .a-link-normal')?.innerText;
-                const price = item.querySelector('.a-price > .a-offscreen')?.innerText;
-                const url = item.querySelector('h2 .a-link-normal')?.href;
-                if (name && price && url) {
-                    items.push({ name, price, url });
-                }
-            });
-            return items;
-        }, maxResults);
+    with {:ok, params} <- validate_input(search_query, max_results),
+         {:ok, data} <- scrape_with_retry(params, @default_max_retries) do
+      {:ok, data}
+    else
+      {:error, reason} ->
+        Logger.error("Scraping failed: #{reason}")
+        {:error, reason}
+    end
+  end
 
-        await browser.close();
-        return { success: true, data: products };
-    } catch (error) {
-        console.error('Scraping error:', error);
-        await browser.close();
-        return { success: false, error: error.message };
-    }
-}
+  defp validate_input(search_query, max_results) when is_binary(search_query) and is_integer(max_results) and max_results > 0 do
+    {:ok, {search_query, max_results}}
+  end
+  defp validate_input(_, _), do: {:error, "Invalid input parameters"}
 
-const [searchQuery, maxResults] = process.argv.slice(2);
-scrapeProductDetails(searchQuery, parseInt(maxResults, 10) || 10)
-    .then(result => console.log(JSON.stringify(result)))
-    .catch(error => console.log(JSON.stringify({ success: false, error: error.message })));
+  defp scrape_with_retry({search_query, max_results}, 0) do
+    {:error, "Max retries reached for '#{search_query}'"}
+  end
+  defp scrape_with_retry(params, retries) do
+    case scrape_attempt(params) do
+      {:ok, _} = result -> result
+      {:error, reason} ->
+        Logger.warn("Retrying due to: #{reason}. Retries left: #{retries - 1}")
+        Process.sleep(@retry_delay_ms)
+        scrape_with_retry(params, retries - 1)
+    end
+  end
+
+  defp scrape_attempt({search_query, max_results}) do
+    {result, 0} = System.cmd("node", ["path/to/puppeteer_script.js", search_query, Integer.to_string(max_results)])
+
+    case Jason.decode(result) do
+      {:ok, %{"success" => true, "data" => data}} ->
+        Logger.info("Successfully scraped data for '#{search_query}'")
+        {:ok, data}
+      {:ok, %{"success" => false, "error" => error}} ->
+        {:error, "Puppeteer error: #{error}"}
+      {:error, _} ->
+        {:error, "JSON parsing failed for response: #{result}"}
+    end
+  end
+end

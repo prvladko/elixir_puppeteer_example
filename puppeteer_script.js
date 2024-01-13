@@ -2,14 +2,17 @@
 const puppeteer = require('puppeteer');
 
 async function scrapeProductDetails(searchQuery, maxResults) {
-    try {
-        const browser = await puppeteer.launch();
-        const page = await browser.newPage();
+    const browser = await puppeteer.launch({
+        args: ['--no-sandbox', '--disable-setuid-sandbox'], 
+        headless: true 
+    });
 
-        await page.goto('https://www.amazon.com/');
+    const page = await browser.newPage();
+    try {
+        await page.goto('https://www.amazon.com/', { waitUntil: 'networkidle2', timeout: 30000 });
         await page.type('#twotabsearchtextbox', searchQuery);
         await page.click('input.nav-input[type="submit"]');
-        await page.waitForSelector('.s-main-slot');
+        await page.waitForSelector('.s-main-slot', { timeout: 30000 });
 
         const products = await page.evaluate(maxResults => {
             const items = [];
@@ -28,6 +31,8 @@ async function scrapeProductDetails(searchQuery, maxResults) {
         await browser.close();
         return { success: true, data: products };
     } catch (error) {
+        console.error('Scraping error:', error);
+        await browser.close();
         return { success: false, error: error.message };
     }
 }
