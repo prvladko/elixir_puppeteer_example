@@ -6,6 +6,7 @@ defmodule ProductScraper do
   @default_max_retries 3
   @retry_delay_ms 2000
   @default_parallel_tasks 50
+  @task_timeout_ms 30000
 
   def start_link(_arg) do
     Task.Supervisor.start_link(name: __MODULE__)
@@ -19,30 +20,28 @@ defmodule ProductScraper do
     |> Enum.each(fn chunk ->
       chunk
       |> Enum.map(&start_scrape_task(&1, max_results))
-      |> Enum.each(fn task -> await_task(task) end)
+      |> Enum.map(&await_task(&1))
+      |> Enum.each(&handle_scrape_result/1)
     end)
   end
 
   defp start_scrape_task(search_query, max_results) do
-    Task.Supervisor.async(__MODULE__, fn ->
+    Task.Supervisor.async_nolink(__MODULE__, fn ->
       scrape_single_product(search_query, max_results)
     end)
   end
 
   defp await_task(task) do
-    task
-    |> Task.await(:infinity)
-    |> handle_scrape_result()
+    case Task.await(task, @task_timeout_ms) do
+      {:ok, _} = result -> result
+      _ -> {:error, "Task timeout"}
+    end
+  rescue
+    exception -> {:error, exception.message}
   end
 
-  defp handle_scrape_result({:ok, data}) do
-    Logger.info("Successfully scraped data")
-    {:ok, data}
-  end
-  defp handle_scrape_result({:error, reason}) do
-    Logger.error("Scraping failed: #{reason}")
-    {:error, reason}
-  end
+  defp handle_scrape_result({:ok, data}), do: Logger.info("Successfully scraped data")
+  defp handle_scrape_result({:error, reason}), do: Logger.error("Scraping failed: #{reason}")
 
   defp scrape_single_product(search_query, max_results) do
     Logger.info("Scraping '#{search_query}' with max results: #{max_results}")
